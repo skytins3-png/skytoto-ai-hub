@@ -1,0 +1,5 @@
+﻿game_id,league,home_team,away_team,start_time,market_type,status,source
+SAMPLE-20260622-1,K리그,A팀,B팀,2026-06-22 19:00:00 KST,승무패,예정,sample
+SAMPLE-20260622-2,KBO,해팀,달팀,2026-06-22 20:00:00 KST,승무패,예정,sample
+SAMPLE-20260622-3,EPL,별팀,구름팀,2026-06-22 22:00:00 KST,승무패,예정,sample
+SAMPLE-20260622-4,J리그,비팀,땅팀,2026-06-23 00:00:00 KST,승무패,예정,sample

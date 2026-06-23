@@ -1,0 +1,89 @@
+SKYTOTO AI HUB BIGDATA 파일검사 / 오류검사 / 업로드순서
+
+0) 이번 통합본에 들어간 핵심
+   - Sun/Moon/Star/Rain/Cloud/Earth AI 부서장
+   - 경기 전 스냅샷 저장: PRE_MATCH
+   - 배당 흐름 저장: ODDS
+   - 팀 최근성적/상대전적 저장: TEAM_STATS
+   - 선발/부상/징계 저장: LINEUPS
+   - 감독/전술/포메이션 메모 저장: COACH_TACTICS
+   - 추천 결과 저장: RECOMMEND
+   - 구매완료/관망 체크 저장: PURCHASE_LOG
+   - 경기 결과 저장: RESULTS
+   - 왜 이겼는지/왜 졌는지 원인 리뷰 저장: RESULT_REVIEW
+   - 다음 분석에 반영할 학습 메모 저장: LEARNING_MEMORY
+
+1) 압축 풀기
+   SKYTOTO_AI_HUB_BIGDATA_ONEFILE.zip 압축을 푼다.
+
+2) 필수 파일 확인
+   app.py
+   requirements.txt
+   README.md
+   .streamlit/config.toml
+   scripts/cloud_runner.py
+   .github/workflows/skytoto-cloud-runner.yml
+
+3) 로컬 오류 검사
+   pip install -r requirements.txt
+   python -m py_compile app.py
+   python -m py_compile scripts/cloud_runner.py
+   python scripts/cloud_runner.py
+   streamlit run app.py
+
+4) 앱에서 테스트
+   왼쪽 사이드바 → 데이터 수집 + 분석 실행
+   탭1 모바일 추천 → 추천 카드 확인
+   탭2 PC 모니터링 → 결과 입력 / 패배원인 분석 / 학습
+   탭3 AI 학습 → 가중치 변경 확인
+   탭4 빅데이터 저장소 → 경기전/배당/팀전력/선발/감독전술/결과리뷰 확인
+   탭5 허브/검사 → 샘플 수집/분석 테스트
+
+5) GitHub 업로드
+   기존 저장소 폴더에 압축 푼 파일 전체를 덮어씌우기
+   git add .
+   git commit -m "Apply SKYTOTO AI HUB bigdata learning agents"
+   git push
+
+6) Streamlit Cloud 배포
+   Streamlit Cloud → 기존 앱 Manage app 또는 New app
+   Repository 선택
+   Branch: main
+   Main file path: app.py
+   Deploy 또는 Reboot
+
+7) PC 꺼져도 자동 실행: GitHub Secrets 등록
+   GitHub 저장소 → Settings → Secrets and variables → Actions → New repository secret
+   SKYTOTO_GOOGLE_SHEET_ID
+   SKYTOTO_SERVICE_ACCOUNT_JSON
+   SKYTOTO_SPORTS_API_URL
+   SKYTOTO_SPORTS_API_KEY
+
+8) 구글시트 권한
+   서비스 계정 이메일을 구글시트 공유에 편집자로 추가한다.
+   앱 설정에서 Google Sheet ID와 Service Account JSON을 넣고 허브/구글시트 모드를 켠다.
+
+9) 자동 실행 확인
+   GitHub → Actions → SKYTOTO AI HUB Cloud Runner → Run workflow
+   성공하면 PC가 꺼져 있어도 스케줄에 맞춰 수집/분석/허브저장이 실행된다.
+
+10) 실시간 테스트 순서
+   - 먼저 API 없이 샘플로 실행 확인
+   - 다음에 실제 스포츠 API URL/KEY 입력
+   - 데이터 수집 + 분석 실행
+   - 빅데이터 저장소에 새 행이 생기는지 확인
+   - 경기 끝난 뒤 결과와 원인 입력
+   - AI 학습 탭에서 가중치 변경 확인
+
+주의
+   자동구매, 대리구매, 결제 자동 클릭 기능은 없다.
+   모바일 추천 확인 후 공식 발매처에서 사용자가 직접 판단한다.
+   수익은 보장하지 않으며, 앱 목적은 기록·분석·위험차단·학습이다.
+
+[SPORTMONKS_FIX_2026]
+이번 수정본은 Sportmonks v3 응답 구조(participants/league/starting_at)를 직접 읽도록 수정됨.
+Streamlit Secrets 권장값:
+SPORTMONKS_API_TOKEN = "복사한_토큰"
+SKYTOTO_SPORTS_API_URL = "https://api.sportmonks.com/v3/football/fixtures/date/{today_dash}?api_token={api_key}&include=participants;league"
+
+업로드 후 Streamlit Cloud에서 Reboot app 실행.
