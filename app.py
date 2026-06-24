@@ -55,6 +55,7 @@ FILES = {
     "learning_memory": DATA_DIR / "learning_memory.csv",
     "learning": DATA_DIR / "learning.json",
     "errors": DATA_DIR / "error_log.csv",
+    "api_diag": DATA_DIR / "api_diagnostics.json",
 }
 
 DEFAULT_SETTINGS = {
@@ -245,6 +246,140 @@ class AgentResult:
 
 # ----------------------------- API / 샘플 데이터 -----------------------------
 
+
+def mask_secret(value: str, keep: int = 4) -> str:
+    value = str(value or "")
+    if not value:
+        return ""
+    if len(value) <= keep * 2:
+        return "*" * len(value)
+    return value[:keep] + "…" + value[-keep:]
+
+
+def build_api_request(settings: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str, str], str]:
+    """URL 템플릿과 키를 실제 호출값으로 변환. 토큰 원문은 화면에 표시하지 않음."""
+    url = settings.get("sports_api_url", "").strip()
+    key = settings.get("sports_api_key", "").strip()
+    today_dash = now_kst().strftime("%Y-%m-%d")
+    today_plain = now_kst().strftime("%Y%m%d")
+    final_url = (
+        url.replace("{api_key}", key)
+           .replace("{today_dash}", today_dash)
+           .replace("{today}", today_plain)
+    )
+    params: Dict[str, Any] = {}
+    headers: Dict[str, str] = {"Accept": "application/json"}
+    if key and "{api_key}" not in url and "api_token=" not in final_url and "serviceKey" not in final_url:
+        if "api.sportmonks.com" in final_url:
+            params["api_token"] = key
+        elif "api-sports.io" in final_url or "api-football" in final_url:
+            headers["x-apisports-key"] = key
+        else:
+            params["api_key"] = key
+    safe_url = final_url.replace(key, mask_secret(key)) if key else final_url
+    return final_url, params, headers, safe_url
+
+
+def save_api_diag(diag: Dict[str, Any]) -> None:
+    try:
+        save_json(FILES["api_diag"], diag)
+    except Exception:
+        pass
+
+
+def load_api_diag() -> Dict[str, Any]:
+    return load_json(FILES["api_diag"], {})
+
+
+def test_sportmonks_api(settings: Dict[str, Any], allow_fallback_date: bool = True) -> Dict[str, Any]:
+    """실제 Sportmonks/API 연결 상태를 화면에서 확인하기 위한 진단 함수."""
+    url = settings.get("sports_api_url", "").strip()
+    key = settings.get("sports_api_key", "").strip()
+    diag: Dict[str, Any] = {
+        "time": kst_str(),
+        "provider": settings.get("sports_api_provider") or "sportmonks" if "sportmonks" in url else "custom",
+        "token_detected": bool(key),
+        "token_preview": mask_secret(key),
+        "url_template": url,
+        "status": "not_started",
+        "http_status": "",
+        "safe_final_url": "",
+        "params_keys": [],
+        "response_data_count": 0,
+        "normalized_games_count": 0,
+        "sample_fallback": False,
+        "message": "",
+        "first_game": {},
+        "response_preview": "",
+    }
+    if not url:
+        diag.update(status="error", message="스포츠 API URL 템플릿이 비어 있습니다.", sample_fallback=True)
+        save_api_diag(diag)
+        return diag
+    if not key:
+        diag.update(status="error", message="스포츠 API KEY/SPORTMONKS_API_TOKEN이 비어 있습니다.", sample_fallback=True)
+        save_api_diag(diag)
+        return diag
+
+    candidate_settings = [settings.copy()]
+    # 오늘 경기 데이터가 없을 때 원인 확인을 쉽게 하려고 내일/7일치도 자동 테스트 가능하게 함.
+    if allow_fallback_date and "fixtures/date/{today_dash}" in url:
+        tomorrow = (now_kst() + timedelta(days=1)).strftime("%Y-%m-%d")
+        week_end = (now_kst() + timedelta(days=7)).strftime("%Y-%m-%d")
+        s2 = settings.copy()
+        s2["sports_api_url"] = url.replace("/fixtures/date/{today_dash}", f"/fixtures/date/{tomorrow}")
+        candidate_settings.append(s2)
+        s3 = settings.copy()
+        s3["sports_api_url"] = url.replace("/fixtures/date/{today_dash}", f"/fixtures/between/{now_kst().strftime('%Y-%m-%d')}/{week_end}")
+        candidate_settings.append(s3)
+
+    last_error = ""
+    for idx, cand in enumerate(candidate_settings, start=1):
+        try:
+            final_url, params, headers, safe_url = build_api_request(cand)
+            diag["safe_final_url"] = safe_url
+            diag["params_keys"] = list(params.keys())
+            diag["attempt"] = idx
+            r = requests.get(final_url, params=params, headers=headers, timeout=18)
+            diag["http_status"] = int(r.status_code)
+            text = r.text or ""
+            diag["response_preview"] = text[:900]
+            try:
+                data = r.json()
+            except Exception:
+                data = {"raw_text": text[:900]}
+            if isinstance(data, dict):
+                raw_items = data.get("data") or data.get("response") or data.get("items") or data.get("games") or []
+                diag["response_data_count"] = len(raw_items) if isinstance(raw_items, list) else (1 if raw_items else 0)
+                if "message" in data:
+                    diag["api_message"] = data.get("message")
+                if "error" in data:
+                    diag["api_error"] = data.get("error")
+                if "errors" in data:
+                    diag["api_errors"] = data.get("errors")
+            elif isinstance(data, list):
+                diag["response_data_count"] = len(data)
+            if r.status_code >= 400:
+                last_error = f"HTTP {r.status_code}: {diag.get('api_message') or diag.get('api_error') or text[:300]}"
+                continue
+            games = normalize_api_items(data)
+            diag["normalized_games_count"] = len(games)
+            if games:
+                g = games[0]
+                diag["status"] = "success"
+                diag["message"] = "Sportmonks/API 실제 경기 데이터 연결 성공"
+                diag["first_game"] = asdict(g)
+                diag["source"] = g.source
+                save_api_diag(diag)
+                return diag
+            last_error = "HTTP는 성공했지만 participants/팀명 파싱 결과가 0건입니다. include 권한 또는 플랜 데이터 범위를 확인하세요."
+        except Exception as e:
+            last_error = str(e)
+            diag["message"] = last_error
+    diag.update(status="error", message=last_error or "API 경기 데이터를 찾지 못했습니다.", sample_fallback=True)
+    save_api_diag(diag)
+    return diag
+
 def fetch_games_from_api(settings: Dict[str, Any]) -> List[Game]:
     """사용자가 API URL을 넣으면 JSON을 읽고, 실패하면 샘플 데이터로 안전 전환.
 
@@ -256,38 +391,32 @@ def fetch_games_from_api(settings: Dict[str, Any]) -> List[Game]:
     url = settings.get("sports_api_url", "").strip()
     key = settings.get("sports_api_key", "").strip()
     if not url:
+        save_api_diag({"time": kst_str(), "status": "sample", "message": "API URL이 비어 있어 샘플 사용", "sample_fallback": True})
+        return make_sample_games()
+    if not key:
+        save_api_diag({"time": kst_str(), "status": "sample", "message": "API KEY가 비어 있어 샘플 사용", "sample_fallback": True})
         return make_sample_games()
     try:
-        today_dash = now_kst().strftime("%Y-%m-%d")
-        today_plain = now_kst().strftime("%Y%m%d")
-        final_url = (
-            url.replace("{api_key}", key)
-               .replace("{today_dash}", today_dash)
-               .replace("{today}", today_plain)
-        )
-        params: Dict[str, Any] = {}
-        headers: Dict[str, str] = {"Accept": "application/json"}
-
-        # API 키 치환자가 없는 일반 API는 query parameter로 보냄.
-        # Sportmonks는 api_token, API-SPORTS는 x-apisports-key 헤더를 주로 사용하지만
-        # 이 앱에서는 URL 템플릿 방식이 제일 단순하고 안전합니다.
-        if key and "{api_key}" not in url and "api_token=" not in final_url and "serviceKey" not in final_url:
-            if "api.sportmonks.com" in final_url:
-                params["api_token"] = key
-            elif "api-sports.io" in final_url or "api-football" in final_url:
-                headers["x-apisports-key"] = key
-            else:
-                params["api_key"] = key
-
+        diag = test_sportmonks_api(settings, allow_fallback_date=True)
+        if diag.get("status") != "success":
+            raise ValueError(diag.get("message") or "API 진단 실패")
+        final_url, params, headers, _safe_url = build_api_request(settings)
         r = requests.get(final_url, params=params, headers=headers, timeout=18)
         r.raise_for_status()
         data = r.json()
         items = normalize_api_items(data)
         if not items:
-            raise ValueError("API 응답에서 경기 목록을 찾지 못했습니다. URL include=participants;league 여부를 확인하세요.")
+            # 진단에서 내일/7일치가 잡혔으면 그 데이터라도 사용
+            if diag.get("safe_final_url") and diag.get("attempt", 1) > 1:
+                test_settings = settings.copy()
+                safe = str(diag.get("safe_final_url", ""))
+                # 보안 때문에 safe URL은 실제 호출에 쓰지 않고 진단 재시도 결과만 안내
+            raise ValueError("API 응답에서 경기 목록을 찾지 못했습니다. 허브/검사 → Sportmonks API 연결 테스트를 확인하세요.")
+        save_api_diag({**diag, "used_for_analysis": True, "analysis_games_count": len(items)})
         return items
     except Exception as e:
         log_error("fetch_games_from_api", e)
+        save_api_diag({**load_api_diag(), "time": kst_str(), "status": "sample", "message": str(e), "sample_fallback": True})
         return make_sample_games()
 
 
@@ -1055,12 +1184,61 @@ def render_file_check() -> None:
     for name, path in FILES.items():
         checks.append({"항목": str(path), "상태": "존재" if path.exists() else "미생성(정상 가능)"})
     st.dataframe(pd.DataFrame(checks), width="stretch", hide_index=True)
-    if st.button("샘플 수집/분석 테스트"):
-        settings = load_settings()
-        hub = GoogleSheetHub({})
-        games = save_games(make_sample_games(), hub)
-        rec = run_analysis(games, hub)
-        st.success(f"테스트 완료: 경기 {len(games)}개, 추천 {len(rec)}개")
+
+    st.markdown("---")
+    st.subheader("⚽ Sportmonks/API 실제 연결 검사")
+    settings = load_settings()
+    url = settings.get("sports_api_url", "")
+    key = settings.get("sports_api_key", "")
+    safe_url = url.replace("{api_key}", mask_secret(key)) if key else url
+    c1, c2, c3 = st.columns(3)
+    c1.metric("토큰 감지", "감지됨" if key else "없음")
+    c2.metric("URL 템플릿", "있음" if url else "없음")
+    c3.metric("공급자", "Sportmonks" if "sportmonks" in url.lower() else "Custom")
+    st.caption("토큰은 보안상 앞뒤 일부만 표시합니다.")
+    st.code(f"TOKEN = {mask_secret(key)}\nURL = {safe_url}", language="text")
+
+    if st.button("Sportmonks 실제 API 연결 테스트", width="stretch"):
+        diag = test_sportmonks_api(settings, allow_fallback_date=True)
+        if diag.get("status") == "success":
+            st.success(f"실제 데이터 연결 성공: {diag.get('normalized_games_count')}개 경기 파싱")
+        else:
+            st.error(f"실제 데이터 연결 실패: {diag.get('message')}")
+        st.session_state["api_diag_now"] = diag
+
+    diag = st.session_state.get("api_diag_now") or load_api_diag()
+    if diag:
+        view = dict(diag)
+        # 응답 미리보기에는 토큰이 섞일 가능성이 낮지만 혹시 몰라 한번 더 마스킹
+        token = settings.get("sports_api_key", "")
+        if token:
+            for k in ["safe_final_url", "response_preview", "message"]:
+                if isinstance(view.get(k), str):
+                    view[k] = view[k].replace(token, mask_secret(token))
+        summary = {
+            "검사시간": view.get("time", ""),
+            "상태": view.get("status", ""),
+            "HTTP": view.get("http_status", ""),
+            "응답 data 개수": view.get("response_data_count", 0),
+            "파싱 경기 수": view.get("normalized_games_count", 0),
+            "샘플 대체": view.get("sample_fallback", False),
+            "메시지": view.get("message", ""),
+        }
+        st.dataframe(pd.DataFrame([summary]), width="stretch", hide_index=True)
+        if view.get("first_game"):
+            st.write("첫 경기 파싱 결과")
+            st.json(view.get("first_game"))
+        with st.expander("진단 상세 보기"):
+            st.json(view)
+
+    st.markdown("---")
+    with st.expander("샘플 수집/분석 테스트 — 실제 API 아님"):
+        st.warning("이 버튼은 A팀/B팀 샘플을 만드는 테스트입니다. 실제 Sportmonks 연결 확인은 위의 API 연결 테스트 버튼을 사용하세요.")
+        if st.button("샘플 수집/분석 테스트 실행"):
+            hub = GoogleSheetHub({})
+            games = save_games(make_sample_games(), hub)
+            rec = run_analysis(games, hub)
+            st.success(f"샘플 테스트 완료: 경기 {len(games)}개, 추천 {len(rec)}개")
 
 
 def main() -> None:
